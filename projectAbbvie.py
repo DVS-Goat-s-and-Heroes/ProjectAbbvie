@@ -1,7 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
-import shutil
 import win32com.client as win32
 import pythoncom # Importante para evitar erros de thread
 
@@ -100,26 +99,23 @@ class DocFlowApp:
             messagebox.showerror("Erro", "Adicione arquivos.")
             return
 
-        temp_files = []
-
         try:
             self.btn_process.config(state="disabled", text="Processando...")
             self.root.update()
             
-            # 1. Inicializa Threads do Windows (CRUCIAL para evitar erros aleatórios)
+            # 1. Inicializa Threads
             pythoncom.CoInitialize()
 
-            # 2. Usa dynamic.Dispatch para evitar cache corrompido do pywin32
-            word_app = win32.dynamic.Dispatch("Word.Application")
+            # 2. Cria App Word (Usa Dispatch padrão que é mais flexível com argumentos opcionais ausentes)
+            word_app = win32.Dispatch("Word.Application")
             word_app.Visible = False
             
-            # 3. Cria o documento
+            # 3. Cria Doc
             doc = word_app.Documents.Add()
 
-            # 4. Usa .Range() em vez de .Content (Mais seguro)
-            rng = doc.Range() 
+            # 4. Cabeçalho
+            rng = doc.Range()
             rng.Collapse(0) # Vai para o fim
-
             rng.InsertAfter(f"Referência: {ref}\nPO: {po}\nCliente: {cli}\n\n")
             rng.InsertParagraphAfter()
 
@@ -127,34 +123,42 @@ class DocFlowApp:
                 original_path = os.path.abspath(item["path"])
                 category = item["category_var"].get()
                 
-                # Renomeação
-                safe_name = f"{self.sanitize_filename(category)}_{self.sanitize_filename(ref)}_{self.sanitize_filename(cli)}.pdf"
-                temp_path = os.path.join(os.path.dirname(original_path), safe_name)
-                shutil.copy2(original_path, temp_path)
-                temp_files.append(temp_path)
+                # Cria apenas o rótulo visual (não renomeia arquivo físico)
+                safe_label = f"{self.sanitize_filename(category)}_{self.sanitize_filename(ref)}.pdf"
 
                 # Move para o fim
                 rng = doc.Range()
-                rng.Collapse(0)
+                rng.Collapse(0) # wdCollapseEnd
 
                 try:
-                    # Tenta anexar. Se o Word não gostar do Range explicito no parametro, usamos o Selection (plano B)
+                    # Tenta anexar de forma SIMPLIFICADA
+                    # Sem "Range=rng", pois já estamos chamando rng.InlineShapes
+                    # Sem "ClassType" para o sistema escolher o ícone
                     obj = rng.InlineShapes.AddOLEObject(
-                        FileName=temp_path,
+                        FileName=original_path,
                         LinkToFile=False,
                         DisplayAsIcon=True,
-                        IconLabel=safe_name,
-                        Range=rng
+                        IconLabel=safe_label
                     )
+                    
                     rng.InsertParagraphAfter()
                     rng.InsertParagraphAfter()
                 except Exception as e_ole:
-                    rng.InsertAfter(f"[Erro no anexo: {safe_name}]")
-                    print(f"Erro OLE: {e_ole}")
+                    # Fallback: Tenta apenas com FileName se o resto falhar
+                    try:
+                         rng.InlineShapes.AddOLEObject(
+                            FileName=original_path,
+                            DisplayAsIcon=True
+                        )
+                    except:
+                        rng.InsertAfter(f"[ERRO: Não foi possível anexar {item['name']}]")
+                        print(f"Erro OLE Fatal: {e_ole}")
 
             # Salvar
             save_name = f"Processo_{self.sanitize_filename(ref)}_{self.sanitize_filename(po)}.docx"
-            save_path = os.path.abspath(os.path.join(os.path.dirname(self.files_data[0]["path"]), save_name))
+            # Garante diretório válido
+            save_dir = os.path.dirname(self.files_data[0]["path"])
+            save_path = os.path.abspath(os.path.join(save_dir, save_name))
             
             doc.SaveAs(save_path)
             doc.Close(False)
@@ -163,17 +167,11 @@ class DocFlowApp:
 
             messagebox.showinfo("Sucesso", f"Arquivo salvo em:\n{save_path}")
             
-            # Limpa temporários
-            for f in temp_files:
-                try: os.remove(f)
-                except: pass
-
             if messagebox.askyesno("Abrir", "Deseja abrir o arquivo?"):
                 os.startfile(save_path)
 
         except Exception as e:
-            # Mostra o erro técnico completo (repr) para facilitar debug
-            messagebox.showerror("Erro Crítico", f"Ocorreu um erro técnico:\n{repr(e)}")
+            messagebox.showerror("Erro Crítico", f"Erro:\n{e}")
             try:
                 if 'doc' in locals() and doc: doc.Close(False)
                 if 'word_app' in locals() and word_app: word_app.Quit()
