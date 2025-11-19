@@ -1,8 +1,9 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
-import shutil  # Biblioteca para copiar arquivos
+import shutil
 import win32com.client as win32
+import pythoncom # Importante para evitar erros de thread
 
 class DocFlowApp:
     def __init__(self, root):
@@ -10,18 +11,15 @@ class DocFlowApp:
         self.root.title("DocFlow Pro - Desktop")
         self.root.geometry("700x600")
 
-        # Variáveis de armazenamento
-        self.files_data = [] # Lista de dicionários
+        self.files_data = []
         
-        # --- Estilos ---
         style = ttk.Style()
         style.configure("Bold.TLabel", font=("Segoe UI", 9, "bold"))
 
-        # --- Área de Inputs Globais ---
+        # --- Inputs ---
         input_frame = ttk.LabelFrame(root, text="Informações do Processo", padding=10)
         input_frame.pack(fill="x", padx=10, pady=5)
 
-        # Grid para inputs
         ttk.Label(input_frame, text="Referência:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
         self.entry_ref = ttk.Entry(input_frame)
         self.entry_ref.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
@@ -34,15 +32,13 @@ class DocFlowApp:
         self.entry_cli = ttk.Entry(input_frame)
         self.entry_cli.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
 
-        # Configura expansão das colunas
         input_frame.columnconfigure(1, weight=1)
         input_frame.columnconfigure(3, weight=1)
 
-        # --- Área de Lista de Arquivos ---
+        # --- Lista ---
         list_frame = ttk.LabelFrame(root, text="Arquivos Selecionados", padding=10)
         list_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-        # Canvas e Scrollbar para a lista de arquivos
         self.canvas = tk.Canvas(list_frame)
         self.scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.canvas.yview)
         self.scrollable_frame = ttk.Frame(self.canvas)
@@ -54,47 +50,33 @@ class DocFlowApp:
 
         self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
-
         self.canvas.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
 
-        # --- Área de Botões ---
+        # --- Botões ---
         btn_frame = ttk.Frame(root, padding=10)
         btn_frame.pack(fill="x", padx=10, pady=5)
 
         ttk.Button(btn_frame, text="Adicionar PDFs", command=self.add_files).pack(side="left", padx=5)
         ttk.Button(btn_frame, text="Limpar Lista", command=self.clear_list).pack(side="left", padx=5)
-        
         self.btn_process = ttk.Button(btn_frame, text="Gerar Documento Word", command=self.generate_word)
         self.btn_process.pack(side="right", padx=5)
 
     def add_files(self):
-        files = filedialog.askopenfilenames(
-            title="Selecione os arquivos PDF",
-            filetypes=[("Arquivos PDF", "*.pdf")]
-        )
-        
+        files = filedialog.askopenfilenames(title="Selecione os PDFs", filetypes=[("Arquivos PDF", "*.pdf")])
         if files:
             for path in files:
                 filename = os.path.basename(path)
                 cat_var = tk.StringVar(value="Outros")
                 
-                row_frame = ttk.Frame(self.scrollable_frame)
-                row_frame.pack(fill="x", pady=2, padx=5)
+                row = ttk.Frame(self.scrollable_frame)
+                row.pack(fill="x", pady=2, padx=5)
                 
-                lbl_name = ttk.Label(row_frame, text=filename, width=40)
-                lbl_name.pack(side="left", padx=5)
+                ttk.Label(row, text=filename, width=40).pack(side="left", padx=5)
+                ttk.Combobox(row, textvariable=cat_var, values=["Fatura", "Capa de Faturamento", "DI", "Outros"], 
+                             state="readonly", width=20).pack(side="left", padx=5)
                 
-                categories = ["Fatura", "Capa de Faturamento", "DI", "Outros"]
-                combo = ttk.Combobox(row_frame, textvariable=cat_var, values=categories, state="readonly", width=20)
-                combo.pack(side="left", padx=5)
-                
-                self.files_data.append({
-                    "path": path,
-                    "name": filename,
-                    "category_var": cat_var,
-                    "widget": row_frame
-                })
+                self.files_data.append({"path": path, "name": filename, "category_var": cat_var, "widget": row})
 
     def clear_list(self):
         for item in self.files_data:
@@ -102,119 +84,96 @@ class DocFlowApp:
         self.files_data = []
 
     def sanitize_filename(self, text):
-        """Remove caracteres proibidos em nomes de arquivos"""
-        invalid_chars = '<>:"/\|?*'
-        for char in invalid_chars:
+        for char in '<>:"/\|?*':
             text = text.replace(char, '_')
         return text.strip()
 
     def generate_word(self):
-        # 1. Validação
         ref = self.entry_ref.get().strip()
         po = self.entry_po.get().strip()
         cli = self.entry_cli.get().strip()
 
         if not all([ref, po, cli]):
-            messagebox.showerror("Erro", "Preencha todos os campos (Referência, PO e Cliente).")
+            messagebox.showerror("Erro", "Preencha todos os campos.")
             return
-        
         if not self.files_data:
-            messagebox.showerror("Erro", "Adicione pelo menos um arquivo PDF.")
+            messagebox.showerror("Erro", "Adicione arquivos.")
             return
 
-        # Lista para rastrear arquivos temporários criados
-        temp_files_created = []
+        temp_files = []
 
-        # 2. Processamento
         try:
             self.btn_process.config(state="disabled", text="Processando...")
             self.root.update()
+            
+            # 1. Inicializa Threads do Windows (CRUCIAL para evitar erros aleatórios)
+            pythoncom.CoInitialize()
 
-            word_app = win32.Dispatch("Word.Application")
+            # 2. Usa dynamic.Dispatch para evitar cache corrompido do pywin32
+            word_app = win32.dynamic.Dispatch("Word.Application")
             word_app.Visible = False
+            
+            # 3. Cria o documento
             doc = word_app.Documents.Add()
 
-            # Cabeçalho
-            rng = doc.Content
-            rng.Collapse(0) # wdCollapseEnd
-            rng.InsertAfter(f"Referência: {ref}\n")
-            rng.InsertAfter(f"PO: {po}\n")
-            rng.InsertAfter(f"Cliente: {cli}\n")
-            rng.InsertParagraphAfter()
+            # 4. Usa .Range() em vez de .Content (Mais seguro)
+            rng = doc.Range() 
+            rng.Collapse(0) # Vai para o fim
+
+            rng.InsertAfter(f"Referência: {ref}\nPO: {po}\nCliente: {cli}\n\n")
             rng.InsertParagraphAfter()
 
-            # Itera sobre os arquivos
             for item in self.files_data:
                 original_path = os.path.abspath(item["path"])
                 category = item["category_var"].get()
                 
-                # --- LÓGICA DE RENOMEAÇÃO ---
-                # Cria o novo nome baseado na categoria e inputs
-                safe_cat = self.sanitize_filename(category)
-                safe_ref = self.sanitize_filename(ref)
-                safe_cli = self.sanitize_filename(cli)
-                
-                # Formato: Fatura_REF123_CLIENTE456.pdf
-                new_filename = f"{safe_cat}_{safe_ref}_{safe_cli}.pdf"
-                
-                # Define caminho temporário (na mesma pasta do original para evitar erros de permissão)
-                base_dir = os.path.dirname(original_path)
-                temp_path = os.path.join(base_dir, new_filename)
-                
-                # Faz a cópia com o nome novo
+                # Renomeação
+                safe_name = f"{self.sanitize_filename(category)}_{self.sanitize_filename(ref)}_{self.sanitize_filename(cli)}.pdf"
+                temp_path = os.path.join(os.path.dirname(original_path), safe_name)
                 shutil.copy2(original_path, temp_path)
-                temp_files_created.append(temp_path) # Marca para deletar depois
+                temp_files.append(temp_path)
 
-                # Move cursor para o fim
-                rng = doc.Content
+                # Move para o fim
+                rng = doc.Range()
                 rng.Collapse(0)
-                
+
                 try:
-                    # --- ANEXAR AO WORD ---
-                    # Removemos ClassType="AcroExch..." para deixar o sistema decidir o ícone e resolver o problema.
-                    # Removemos IconFileName para usar o ícone padrão do sistema.
-                    # Usamos temp_path para que o anexo tenha o nome novo.
-                    
+                    # Tenta anexar. Se o Word não gostar do Range explicito no parametro, usamos o Selection (plano B)
                     obj = rng.InlineShapes.AddOLEObject(
                         FileName=temp_path,
                         LinkToFile=False,
                         DisplayAsIcon=True,
-                        IconLabel=new_filename, # O rótulo também fica com o nome novo
+                        IconLabel=safe_name,
                         Range=rng
                     )
-                    
                     rng.InsertParagraphAfter()
                     rng.InsertParagraphAfter()
-
                 except Exception as e_ole:
-                    rng.InsertAfter(f"[ERRO AO ANEXAR {category}: {str(e_ole)}]")
-                    rng.InsertParagraphAfter()
+                    rng.InsertAfter(f"[Erro no anexo: {safe_name}]")
                     print(f"Erro OLE: {e_ole}")
 
             # Salvar
-            save_filename = f"Processo_{self.sanitize_filename(ref)}_{self.sanitize_filename(po)}.docx"
-            save_path = os.path.join(os.path.dirname(self.files_data[0]["path"]), save_filename)
-            save_path = os.path.abspath(save_path)
+            save_name = f"Processo_{self.sanitize_filename(ref)}_{self.sanitize_filename(po)}.docx"
+            save_path = os.path.abspath(os.path.join(os.path.dirname(self.files_data[0]["path"]), save_name))
             
             doc.SaveAs(save_path)
             doc.Close(False)
-            word_app.Quit()
+            try: word_app.Quit()
+            except: pass
 
-            # Limpa arquivos temporários
-            for temp_f in temp_files_created:
-                try:
-                    if os.path.exists(temp_f):
-                        os.remove(temp_f)
-                except:
-                    pass
-
-            messagebox.showinfo("Sucesso", f"Arquivo gerado com sucesso em:\n{save_path}")
+            messagebox.showinfo("Sucesso", f"Arquivo salvo em:\n{save_path}")
             
-            if messagebox.askyesno("Abrir", "Deseja abrir o arquivo gerado agora?"):
+            # Limpa temporários
+            for f in temp_files:
+                try: os.remove(f)
+                except: pass
+
+            if messagebox.askyesno("Abrir", "Deseja abrir o arquivo?"):
                 os.startfile(save_path)
 
         except Exception as e:
-            messagebox.showerror("Erro Crítico", f"Ocorreu um erro:\n{str(e)}")
+            # Mostra o erro técnico completo (repr) para facilitar debug
+            messagebox.showerror("Erro Crítico", f"Ocorreu um erro técnico:\n{repr(e)}")
             try:
                 if 'doc' in locals() and doc: doc.Close(False)
                 if 'word_app' in locals() and word_app: word_app.Quit()
