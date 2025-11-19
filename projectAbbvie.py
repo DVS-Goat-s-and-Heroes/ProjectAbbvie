@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
+import shutil  # Biblioteca para copiar arquivos
 import win32com.client as win32
 
 class DocFlowApp:
@@ -10,7 +11,7 @@ class DocFlowApp:
         self.root.geometry("700x600")
 
         # Variáveis de armazenamento
-        self.files_data = [] # Lista de dicionários: {'path': str, 'name': str, 'category_var': tk.StringVar}
+        self.files_data = [] # Lista de dicionários
         
         # --- Estilos ---
         style = ttk.Style()
@@ -76,35 +77,36 @@ class DocFlowApp:
         if files:
             for path in files:
                 filename = os.path.basename(path)
-                
-                # Cria variavel para guardar a categoria selecionada
                 cat_var = tk.StringVar(value="Outros")
                 
-                # Cria container visual para a linha
                 row_frame = ttk.Frame(self.scrollable_frame)
                 row_frame.pack(fill="x", pady=2, padx=5)
                 
-                # Label do nome do arquivo
                 lbl_name = ttk.Label(row_frame, text=filename, width=40)
                 lbl_name.pack(side="left", padx=5)
                 
-                # Dropdown de Categoria
                 categories = ["Fatura", "Capa de Faturamento", "DI", "Outros"]
                 combo = ttk.Combobox(row_frame, textvariable=cat_var, values=categories, state="readonly", width=20)
                 combo.pack(side="left", padx=5)
                 
-                # Salva os dados
                 self.files_data.append({
                     "path": path,
                     "name": filename,
                     "category_var": cat_var,
-                    "widget": row_frame # Guardamos a ref do widget se precisarmos deletar depois
+                    "widget": row_frame
                 })
 
     def clear_list(self):
         for item in self.files_data:
             item["widget"].destroy()
         self.files_data = []
+
+    def sanitize_filename(self, text):
+        """Remove caracteres proibidos em nomes de arquivos"""
+        invalid_chars = '<>:"/\|?*'
+        for char in invalid_chars:
+            text = text.replace(char, '_')
+        return text.strip()
 
     def generate_word(self):
         # 1. Validação
@@ -120,95 +122,103 @@ class DocFlowApp:
             messagebox.showerror("Erro", "Adicione pelo menos um arquivo PDF.")
             return
 
+        # Lista para rastrear arquivos temporários criados
+        temp_files_created = []
+
         # 2. Processamento
         try:
             self.btn_process.config(state="disabled", text="Processando...")
-            self.root.update() # Atualiza a interface
+            self.root.update()
 
             word_app = win32.Dispatch("Word.Application")
             word_app.Visible = False
             doc = word_app.Documents.Add()
 
-            # --- Cabeçalho (Estilo Clean) ---
-            # Adiciona as informações
+            # Cabeçalho
             rng = doc.Content
-            rng.Collapse(0) # Fim do doc
+            rng.Collapse(0) # wdCollapseEnd
             rng.InsertAfter(f"Referência: {ref}\n")
             rng.InsertAfter(f"PO: {po}\n")
             rng.InsertAfter(f"Cliente: {cli}\n")
             rng.InsertParagraphAfter()
-            
-            # Adiciona uma linha separadora ou espaço
             rng.InsertParagraphAfter()
 
-            # Itera sobre os arquivos na lista
+            # Itera sobre os arquivos
             for item in self.files_data:
-                pdf_path = os.path.abspath(item["path"])
+                original_path = os.path.abspath(item["path"])
                 category = item["category_var"].get()
                 
-                # Label do ícone (Nome do arquivo PDF gerado)
-                icon_label = f"{category[:3].upper()}_{ref}.pdf"
+                # --- LÓGICA DE RENOMEAÇÃO ---
+                # Cria o novo nome baseado na categoria e inputs
+                safe_cat = self.sanitize_filename(category)
+                safe_ref = self.sanitize_filename(ref)
+                safe_cli = self.sanitize_filename(cli)
+                
+                # Formato: Fatura_REF123_CLIENTE456.pdf
+                new_filename = f"{safe_cat}_{safe_ref}_{safe_cli}.pdf"
+                
+                # Define caminho temporário (na mesma pasta do original para evitar erros de permissão)
+                base_dir = os.path.dirname(original_path)
+                temp_path = os.path.join(base_dir, new_filename)
+                
+                # Faz a cópia com o nome novo
+                shutil.copy2(original_path, temp_path)
+                temp_files_created.append(temp_path) # Marca para deletar depois
 
                 # Move cursor para o fim
                 rng = doc.Content
-                rng.Collapse(0) # wdCollapseEnd
-                
-                # Adiciona o título da categoria (opcional, pode remover se quiser EXATAMENTE só o ícone)
-                # rng.InsertAfter(f"{category}:") 
-                # rng.InsertParagraphAfter()
-                
                 rng.Collapse(0)
-
+                
                 try:
-                    # --- CORREÇÃO PRINCIPAL AQUI ---
-                    # 1. Mudado ClassName -> ClassType
-                    # 2. Removido IconFileName para usar o ícone padrão do sistema (igual imagem 2)
-                    # 3. Adicionado Range no final para inserir exatamente na posição
+                    # --- ANEXAR AO WORD ---
+                    # Removemos ClassType="AcroExch..." para deixar o sistema decidir o ícone e resolver o problema.
+                    # Removemos IconFileName para usar o ícone padrão do sistema.
+                    # Usamos temp_path para que o anexo tenha o nome novo.
+                    
                     obj = rng.InlineShapes.AddOLEObject(
-                        ClassType="AcroExch.Document.DC", # Nome correto do parâmetro
-                        FileName=pdf_path,
+                        FileName=temp_path,
                         LinkToFile=False,
                         DisplayAsIcon=True,
-                        IconLabel=icon_label,
+                        IconLabel=new_filename, # O rótulo também fica com o nome novo
                         Range=rng
                     )
                     
-                    # Tenta formatar o ícone (Opcional: Centralizar)
-                    # obj.Range.ParagraphFormat.Alignment = 1 # 0=Left, 1=Center, 2=Right
-                    
-                    # Adiciona espaço após o ícone
                     rng.InsertParagraphAfter()
                     rng.InsertParagraphAfter()
 
                 except Exception as e_ole:
-                    # Se der erro, tenta avisar no documento
                     rng.InsertAfter(f"[ERRO AO ANEXAR {category}: {str(e_ole)}]")
                     rng.InsertParagraphAfter()
                     print(f"Erro OLE: {e_ole}")
 
             # Salvar
-            save_filename = f"Processo_{ref}_{po}.docx"
+            save_filename = f"Processo_{self.sanitize_filename(ref)}_{self.sanitize_filename(po)}.docx"
             save_path = os.path.join(os.path.dirname(self.files_data[0]["path"]), save_filename)
-            save_path = os.path.abspath(save_path) # Garante caminho absoluto
+            save_path = os.path.abspath(save_path)
             
             doc.SaveAs(save_path)
             doc.Close(False)
             word_app.Quit()
 
+            # Limpa arquivos temporários
+            for temp_f in temp_files_created:
+                try:
+                    if os.path.exists(temp_f):
+                        os.remove(temp_f)
+                except:
+                    pass
+
             messagebox.showinfo("Sucesso", f"Arquivo gerado com sucesso em:\n{save_path}")
             
-            # Pergunta se quer abrir
             if messagebox.askyesno("Abrir", "Deseja abrir o arquivo gerado agora?"):
                 os.startfile(save_path)
 
         except Exception as e:
-            messagebox.showerror("Erro Crítico", f"Ocorreu um erro na automação:\n{str(e)}")
-            # Tenta fechar o word se ficou aberto
+            messagebox.showerror("Erro Crítico", f"Ocorreu um erro:\n{str(e)}")
             try:
                 if 'doc' in locals() and doc: doc.Close(False)
                 if 'word_app' in locals() and word_app: word_app.Quit()
-            except:
-                pass
+            except: pass
         
         finally:
             self.btn_process.config(state="normal", text="Gerar Documento Word")
