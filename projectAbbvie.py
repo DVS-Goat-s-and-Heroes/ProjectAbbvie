@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
 import win32com.client as win32
+import pythoncom # Adicionado para estabilidade
 
 class DocFlowApp:
     def __init__(self, root):
@@ -10,7 +11,7 @@ class DocFlowApp:
         self.root.geometry("700x600")
 
         # Variáveis de armazenamento
-        self.files_data = [] # Lista de dicionários: {'path': str, 'name': str, 'category_var': tk.StringVar}
+        self.files_data = [] 
         
         # --- Estilos ---
         style = ttk.Style()
@@ -41,7 +42,7 @@ class DocFlowApp:
         list_frame = ttk.LabelFrame(root, text="Arquivos Selecionados", padding=10)
         list_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-        # Canvas e Scrollbar para a lista de arquivos
+        # Canvas e Scrollbar
         self.canvas = tk.Canvas(list_frame)
         self.scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.canvas.yview)
         self.scrollable_frame = ttk.Frame(self.canvas)
@@ -76,35 +77,34 @@ class DocFlowApp:
         if files:
             for path in files:
                 filename = os.path.basename(path)
-                
-                # Cria variavel para guardar a categoria selecionada
                 cat_var = tk.StringVar(value="Outros")
                 
-                # Cria container visual para a linha
                 row_frame = ttk.Frame(self.scrollable_frame)
                 row_frame.pack(fill="x", pady=2, padx=5)
                 
-                # Label do nome do arquivo
                 lbl_name = ttk.Label(row_frame, text=filename, width=40)
                 lbl_name.pack(side="left", padx=5)
                 
-                # Dropdown de Categoria
                 categories = ["Fatura", "Capa de Faturamento", "DI", "Outros"]
                 combo = ttk.Combobox(row_frame, textvariable=cat_var, values=categories, state="readonly", width=20)
                 combo.pack(side="left", padx=5)
                 
-                # Salva os dados
                 self.files_data.append({
                     "path": path,
                     "name": filename,
                     "category_var": cat_var,
-                    "widget": row_frame # Guardamos a ref do widget se precisarmos deletar depois
+                    "widget": row_frame 
                 })
 
     def clear_list(self):
         for item in self.files_data:
             item["widget"].destroy()
         self.files_data = []
+
+    def sanitize_filename(self, text):
+        for char in '<>:"/\|?*':
+            text = text.replace(char, '_')
+        return text.strip()
 
     def generate_word(self):
         # 1. Validação
@@ -123,22 +123,22 @@ class DocFlowApp:
         # 2. Processamento
         try:
             self.btn_process.config(state="disabled", text="Processando...")
-            self.root.update() # Atualiza a interface
+            self.root.update() 
+
+            # Inicializa contexto COM para evitar erros de thread
+            pythoncom.CoInitialize()
 
             word_app = win32.Dispatch("Word.Application")
             word_app.Visible = False
             doc = word_app.Documents.Add()
 
-            # --- Cabeçalho (Estilo Clean) ---
-            # Adiciona as informações
+            # --- Cabeçalho ---
             rng = doc.Content
             rng.Collapse(0) # Fim do doc
             rng.InsertAfter(f"Referência: {ref}\n")
             rng.InsertAfter(f"PO: {po}\n")
             rng.InsertAfter(f"Cliente: {cli}\n")
             rng.InsertParagraphAfter()
-            
-            # Adiciona uma linha separadora ou espaço
             rng.InsertParagraphAfter()
 
             # Itera sobre os arquivos na lista
@@ -146,26 +146,20 @@ class DocFlowApp:
                 pdf_path = os.path.abspath(item["path"])
                 category = item["category_var"].get()
                 
-                # Label do ícone (Nome do arquivo PDF gerado)
-                icon_label = f"{category[:3].upper()}_{ref}.pdf"
+                # Usa o sanitizador para evitar caracteres inválidos no label
+                safe_cat = self.sanitize_filename(category)
+                safe_ref = self.sanitize_filename(ref)
+                icon_label = f"{safe_cat[:3].upper()}_{safe_ref}.pdf"
 
                 # Move cursor para o fim
                 rng = doc.Content
                 rng.Collapse(0) # wdCollapseEnd
                 
-                # Adiciona o título da categoria (opcional, pode remover se quiser EXATAMENTE só o ícone)
-                # rng.InsertAfter(f"{category}:") 
-                # rng.InsertParagraphAfter()
-                
-                rng.Collapse(0)
-
                 try:
-                    # --- CORREÇÃO PRINCIPAL AQUI ---
-                    # 1. Mudado ClassName -> ClassType
-                    # 2. Removido IconFileName para usar o ícone padrão do sistema (igual imagem 2)
-                    # 3. Adicionado Range no final para inserir exatamente na posição
+                    # --- AJUSTE DOS ÍCONES ---
+                    # Removemos ClassType="AcroExch..." 
+                    # Isso força o Word a usar o ícone padrão do sistema (ex: Chrome, Edge, Adobe)
                     obj = rng.InlineShapes.AddOLEObject(
-                        ClassType="AcroExch.Document.DC", # Nome correto do parâmetro
                         FileName=pdf_path,
                         LinkToFile=False,
                         DisplayAsIcon=True,
@@ -173,23 +167,21 @@ class DocFlowApp:
                         Range=rng
                     )
                     
-                    # Tenta formatar o ícone (Opcional: Centralizar)
-                    # obj.Range.ParagraphFormat.Alignment = 1 # 0=Left, 1=Center, 2=Right
-                    
-                    # Adiciona espaço após o ícone
                     rng.InsertParagraphAfter()
                     rng.InsertParagraphAfter()
 
                 except Exception as e_ole:
-                    # Se der erro, tenta avisar no documento
                     rng.InsertAfter(f"[ERRO AO ANEXAR {category}: {str(e_ole)}]")
                     rng.InsertParagraphAfter()
                     print(f"Erro OLE: {e_ole}")
 
             # Salvar
-            save_filename = f"Processo_{ref}_{po}.docx"
+            safe_ref_file = self.sanitize_filename(ref)
+            safe_po_file = self.sanitize_filename(po)
+            save_filename = f"Processo_{safe_ref_file}_{safe_po_file}.docx"
+            
             save_path = os.path.join(os.path.dirname(self.files_data[0]["path"]), save_filename)
-            save_path = os.path.abspath(save_path) # Garante caminho absoluto
+            save_path = os.path.abspath(save_path) 
             
             doc.SaveAs(save_path)
             doc.Close(False)
@@ -197,13 +189,11 @@ class DocFlowApp:
 
             messagebox.showinfo("Sucesso", f"Arquivo gerado com sucesso em:\n{save_path}")
             
-            # Pergunta se quer abrir
             if messagebox.askyesno("Abrir", "Deseja abrir o arquivo gerado agora?"):
                 os.startfile(save_path)
 
         except Exception as e:
             messagebox.showerror("Erro Crítico", f"Ocorreu um erro na automação:\n{str(e)}")
-            # Tenta fechar o word se ficou aberto
             try:
                 if 'doc' in locals() and doc: doc.Close(False)
                 if 'word_app' in locals() and word_app: word_app.Quit()
