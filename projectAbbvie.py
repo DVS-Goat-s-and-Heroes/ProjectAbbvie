@@ -168,8 +168,6 @@ class DocFlowApp:
                         ClassType="AcroExch.Document.DC", # Nome correto do parâmetro
                         FileName=pdf_path,
                         LinkToFile=False,
-                        DisplayAsIcon=True,
-                        IconLabel=icon_label,
                         Range=rng
                     )
                     
