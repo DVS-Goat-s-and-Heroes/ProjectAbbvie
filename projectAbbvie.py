@@ -247,38 +247,37 @@ class DocFlowApp:
                 rng = doc.Content
                 rng.Collapse(0)
 
+                # --- LÓGICA DE ANEXO: PLANO A (Adobe) -> PLANO B (Sistema) ---
                 try:
-                    # --- CORREÇÃO DO ÍCONE E PREVIEW ---
-                    # 1. DisplayAsIcon=True: Obriga a ser ícone, não preview.
-                    # 2. IconLabel: Define o nome que vai aparecer embaixo.
-                    # 3. ClassType: Removido ou mantido? Se mantiver "AcroExch.Document", 
-                    #    ele força o ícone do Adobe. Se remover, usa o do sistema.
-                    #    Vou manter o que estava no seu, mas adicionei DisplayAsIcon.
-                    
+                    # PLANO A: Tenta usar o Adobe Acrobat explicitamente.
+                    # Isso é bom porque garante o ícone correto em máquinas que têm Adobe.
+                    # 'DisplayAsIcon=True' força o ícone em vez do preview da página.
                     obj = rng.InlineShapes.AddOLEObject(
-                        ClassType="AcroExch.Document", # Se der erro em PCs sem Adobe, remova essa linha
+                        ClassType="AcroExch.Document", 
                         FileName=new_path,
                         LinkToFile=False,
-                        DisplayAsIcon=True, # <--- ESSENCIAL PARA EVITAR O "PREVIEW"
-                        IconLabel=new_name, # <--- ESSENCIAL PARA O NOME APARECER
+                        DisplayAsIcon=True, 
+                        IconLabel=new_name, 
                         Range=rng,
                     )
-
                     rng.InsertParagraphAfter()
                     
-
                 except Exception as e:
-                    # Fallback caso falhe com ClassType fixo
+                    # PLANO B (Fallback): Se o PC não tem Adobe ("AcroExch.Document" falha),
+                    # tentamos de novo SEM especificar o ClassType.
+                    # Assim, o Windows usa o leitor de PDF padrão instalado (Foxit, etc).
                     try:
                         rng.InlineShapes.AddOLEObject(
-                            FileName=new_path,
+                            FileName=new_path, # Sem ClassType
                             LinkToFile=False,
-                            DisplayAsIcon=True,
-                            IconLabel=new_name,
+                            DisplayAsIcon=True, # Mantém como ícone
+                            IconLabel=new_name, # Mantém o nome
                             Range=rng
                         )
-                    except:
-                        rng.InsertAfter(f"[ERRO ao anexar {new_path}: {e}]")
+                        rng.InsertParagraphAfter()
+                    except Exception as e_final:
+                        # Se falhar tudo (ex: PC sem nenhum leitor de PDF instalado)
+                        rng.InsertAfter(f"[ERRO CRÍTICO ao anexar {new_name}: {e_final}]")
                         rng.InsertParagraphAfter()
 
             default_dir = os.path.dirname(self.files_data[0]["path"])
