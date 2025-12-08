@@ -247,13 +247,14 @@ class DocFlowApp:
                 rng = doc.Content
                 rng.Collapse(0)
 
-                # --- LÓGICA DE ANEXO: PLANO A (Adobe) -> PLANO B (Sistema) ---
+                # --- LÓGICA DE ANEXO: APENAS SISTEMA OPERACIONAL (Universal) ---
                 try:
-                    # PLANO A: Tenta usar o Adobe Acrobat explicitamente.
-                    # Isso é bom porque garante o ícone correto em máquinas que têm Adobe.
-                    # 'DisplayAsIcon=True' força o ícone em vez do preview da página.
+                    # Removemos ClassType="AcroExch.Document".
+                    # Deixamos o Windows escolher o ícone baseado no programa padrão.
+                    # DisplayAsIcon=True impede que vire preview de imagem.
+                    # IconLabel garante o nome embaixo.
+                    
                     obj = rng.InlineShapes.AddOLEObject(
-                        ClassType="AcroExch.Document", 
                         FileName=new_path,
                         LinkToFile=False,
                         DisplayAsIcon=True, 
@@ -263,20 +264,16 @@ class DocFlowApp:
                     rng.InsertParagraphAfter()
                     
                 except Exception as e:
-                    # PLANO B (Fallback): Se o PC não tem Adobe ("AcroExch.Document" falha),
-                    # tentamos de novo SEM especificar o ClassType.
-                    # Assim, o Windows usa o leitor de PDF padrão instalado (Foxit, etc).
+                    # Se falhar, tentamos o mais básico possível
                     try:
                         rng.InlineShapes.AddOLEObject(
-                            FileName=new_path, # Sem ClassType
+                            FileName=new_path,
                             LinkToFile=False,
-                            DisplayAsIcon=True, # Mantém como ícone
-                            IconLabel=new_name, # Mantém o nome
+                            DisplayAsIcon=True,
                             Range=rng
                         )
                         rng.InsertParagraphAfter()
                     except Exception as e_final:
-                        # Se falhar tudo (ex: PC sem nenhum leitor de PDF instalado)
                         rng.InsertAfter(f"[ERRO CRÍTICO ao anexar {new_name}: {e_final}]")
                         rng.InsertParagraphAfter()
 
