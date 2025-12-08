@@ -4,6 +4,7 @@ import os
 import shutil
 import win32com.client as win32
 import tempfile
+import pythoncom # Importante adicionar para evitar erros de thread em algumas máquinas
 
 # Tentar importar tkinterdnd2 para habilitar Drag & Drop.
 try:
@@ -193,6 +194,9 @@ class DocFlowApp:
             self.btn_process.config(state="disabled", text="Processando...")
             self.root.update()
 
+            pythoncom.CoInitialize() # Inicializa threads para segurança
+            
+            # Dispatch simples, mas se der erro "Add.Content", troque para win32.dynamic.Dispatch
             word_app = win32.Dispatch("Word.Application")
             word_app.Visible = False
             doc = word_app.Documents.Add()
@@ -244,10 +248,19 @@ class DocFlowApp:
                 rng.Collapse(0)
 
                 try:
+                    # --- CORREÇÃO DO ÍCONE E PREVIEW ---
+                    # 1. DisplayAsIcon=True: Obriga a ser ícone, não preview.
+                    # 2. IconLabel: Define o nome que vai aparecer embaixo.
+                    # 3. ClassType: Removido ou mantido? Se mantiver "AcroExch.Document", 
+                    #    ele força o ícone do Adobe. Se remover, usa o do sistema.
+                    #    Vou manter o que estava no seu, mas adicionei DisplayAsIcon.
+                    
                     obj = rng.InlineShapes.AddOLEObject(
-                        ClassType="AcroExch.Document",
+                        ClassType="AcroExch.Document", # Se der erro em PCs sem Adobe, remova essa linha
                         FileName=new_path,
                         LinkToFile=False,
+                        DisplayAsIcon=True, # <--- ESSENCIAL PARA EVITAR O "PREVIEW"
+                        IconLabel=new_name, # <--- ESSENCIAL PARA O NOME APARECER
                         Range=rng,
                     )
 
@@ -255,8 +268,18 @@ class DocFlowApp:
                     
 
                 except Exception as e:
-                    rng.InsertAfter(f"[ERRO ao anexar {new_path}: {e}]")
-                    rng.InsertParagraphAfter()
+                    # Fallback caso falhe com ClassType fixo
+                    try:
+                        rng.InlineShapes.AddOLEObject(
+                            FileName=new_path,
+                            LinkToFile=False,
+                            DisplayAsIcon=True,
+                            IconLabel=new_name,
+                            Range=rng
+                        )
+                    except:
+                        rng.InsertAfter(f"[ERRO ao anexar {new_path}: {e}]")
+                        rng.InsertParagraphAfter()
 
             default_dir = os.path.dirname(self.files_data[0]["path"])
             save_filename = f"Processo_{ref}_{po}.docx"
@@ -276,6 +299,12 @@ class DocFlowApp:
             doc.SaveAs(save_path)
             doc.Close(False)
             word_app.Quit()
+            
+            # Limpa temporários
+            try:
+                shutil.rmtree(temp_dir)
+            except:
+                pass
 
             messagebox.showinfo("Sucesso", f"Documento gerado em:\n{save_path}")
 
@@ -284,6 +313,10 @@ class DocFlowApp:
 
         except Exception as e:
             messagebox.showerror("Erro", f"Erro crítico:\n{e}")
+            try:
+                if 'doc' in locals() and doc: doc.Close(False)
+                if 'word_app' in locals() and word_app: word_app.Quit()
+            except: pass
 
         finally:
             self.btn_process.config(state="normal", text="Gerar Documento Word")
