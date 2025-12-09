@@ -4,7 +4,7 @@ import os
 import shutil
 import win32com.client as win32
 import tempfile
-import pythoncom # Importante adicionar para evitar erros de thread em algumas máquinas
+import pythoncom 
 
 # Tentar importar tkinterdnd2 para habilitar Drag & Drop.
 try:
@@ -190,110 +190,140 @@ class DocFlowApp:
             messagebox.showerror("Erro", "Adicione pelo menos um PDF.")
             return
 
+        # Configuração de Limite de Tamanho
+        MAX_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
+
+        # 1. Agrupamento em lotes (Batches) baseados no tamanho
+        batches = []
+        current_batch = []
+        current_batch_size = 0
+
+        for item in self.files_data:
+            file_path = os.path.abspath(item["path"])
+            try:
+                file_size = os.path.getsize(file_path)
+            except OSError:
+                file_size = 0
+            
+            # Se adicionar esse arquivo estoura 5MB E já temos arquivos no lote atual:
+            # Finaliza o lote atual e cria um novo.
+            # (Se o arquivo sozinho for > 5MB, ele entrará num lote novo sozinho ou passará o limite se for o primeiro, o que é esperado)
+            if (current_batch_size + file_size > MAX_SIZE_BYTES) and current_batch:
+                batches.append(current_batch)
+                current_batch = []
+                current_batch_size = 0
+            
+            current_batch.append(item)
+            current_batch_size += file_size
+
+        # Adiciona o último lote se sobrou algo
+        if current_batch:
+            batches.append(current_batch)
+
         try:
             self.btn_process.config(state="disabled", text="Processando...")
             self.root.update()
 
-            pythoncom.CoInitialize() # Inicializa threads para segurança
-            
-            # Dispatch simples, mas se der erro "Add.Content", troque para win32.dynamic.Dispatch
-            word_app = win32.Dispatch("Word.Application")
+            pythoncom.CoInitialize()
+
+            # Tenta conectar ao Word
+            try:
+                word_app = win32.Dispatch("Word.Application")
+            except:
+                word_app = win32.dynamic.Dispatch("Word.Application")
+                
             word_app.Visible = False
-            doc = word_app.Documents.Add()
 
-            # Cabeçalho
-            rng = doc.Content
-            rng.InsertAfter(f"Referência: {ref}\n")
-            rng.InsertAfter(f"PO: {po}\n")
-            rng.InsertAfter(f"Cliente: {cli}\n\n")
-
-            # Tempdir para cópias
+            # Prepara diretório temporário
             temp_dir = tempfile.mkdtemp(prefix="docflow_pdf_")
-
+            
             safe = lambda s: "".join(
                 c if c.isalnum() or c in ("-", "_") else "_" for c in str(s)
             )
+            
+            generated_files = []
 
-            for item in self.files_data:
-                original_pdf = os.path.abspath(item["path"])
-                category = item["category_var"].get()
+            # 2. Processa cada lote (batch) como um Documento separado
+            for i, batch in enumerate(batches):
+                doc = word_app.Documents.Add()
+                
+                # Cabeçalho
+                rng = doc.Content
+                rng.InsertAfter(f"Referência: {ref}\n")
+                rng.InsertAfter(f"PO: {po}\n")
+                rng.InsertAfter(f"Cliente: {cli}\n\n")
 
-                category_clean = safe(category).strip("_")
+                # Processa arquivos deste lote
+                for item in batch:
+                    original_pdf = os.path.abspath(item["path"])
+                    category = item["category_var"].get()
 
-                # cria nome sem duplicar _pdf ou .pdf
-                new_name = f"{category_clean}_{ref}_{cli}_{po}"
-                new_name = new_name.replace("_pdf", "")
-                new_name = new_name.replace(".pdf", "")
-                new_name += ".pdf"
+                    category_clean = safe(category).strip("_")
 
-                new_path = os.path.join(temp_dir, new_name)
+                    # Cria nome para anexo
+                    new_name = f"{category_clean}_{ref}_{cli}_{po}"
+                    new_name = new_name.replace("_pdf", "").replace(".pdf", "")
+                    new_name += ".pdf"
 
-                # Evita sobrescrever
-                if os.path.exists(new_path):
-                    base, ext = os.path.splitext(new_name)
+                    new_path = os.path.join(temp_dir, new_name)
+
+                    # Evita duplicidade no temp
+                    if os.path.exists(new_path):
+                        base, ext = os.path.splitext(new_name)
+                        counter = 1
+                        while True:
+                            attempt = os.path.join(temp_dir, f"{base}_{counter}{ext}")
+                            if not os.path.exists(attempt):
+                                new_path = attempt
+                                break
+                            counter += 1
+
+                    try:
+                        shutil.copy2(original_pdf, new_path)
+                    except:
+                        new_path = original_pdf
+
+                    rng = doc.Content
+                    rng.Collapse(0)
+
+                    try:
+                        # Tenta anexar usando a lógica AcroExch primeiro
+                        obj = rng.InlineShapes.AddOLEObject(
+                            ClassType="AcroExch.Document",
+                            FileName=new_path,
+                            LinkToFile=False,
+                            Range=rng,
+                        )
+                        rng.InsertParagraphAfter()
+                    except Exception as e:
+                        # Se falhar (ex: sem Adobe), apenas insere mensagem de erro no doc
+                        # ou tenta fallback genérico se desejado.
+                        rng.InsertAfter(f"[ERRO ao anexar {new_name}: {e}]")
+                        rng.InsertParagraphAfter()
+
+                # Salvar o documento do lote atual
+                default_dir = os.path.dirname(self.files_data[0]["path"])
+                
+                # Define nome do arquivo: Se tiver mais de 1 lote, adiciona _ParteX
+                suffix = f"_Parte{i+1}" if len(batches) > 1 else ""
+                save_filename = f"Processo_{ref}_{po}{suffix}.docx"
+                save_path = os.path.join(default_dir, save_filename)
+
+                # Evitar sobrescrever
+                if os.path.exists(save_path):
+                    base, ext = os.path.splitext(save_filename)
                     counter = 1
                     while True:
-                        attempt = os.path.join(temp_dir, f"{base}_{counter}{ext}")
+                        attempt = os.path.join(default_dir, f"{base}_{counter}{ext}")
                         if not os.path.exists(attempt):
-                            new_path = attempt
+                            save_path = attempt
                             break
                         counter += 1
 
-                try:
-                    shutil.copy2(original_pdf, new_path)
-                except:
-                    new_path = original_pdf
+                doc.SaveAs(save_path)
+                doc.Close(False)
+                generated_files.append(save_path)
 
-                rng = doc.Content
-                rng.Collapse(0)
-
-                # --- LÓGICA DE ANEXO: APENAS SISTEMA OPERACIONAL (Universal) ---
-                try:
-                    # Removemos ClassType="AcroExch.Document".
-                    # Deixamos o Windows escolher o ícone baseado no programa padrão.
-                    # DisplayAsIcon=True impede que vire preview de imagem.
-                    # IconLabel garante o nome embaixo.
-                    
-                    obj = rng.InlineShapes.AddOLEObject(
-                        FileName=new_path,
-                        LinkToFile=False,
-                        DisplayAsIcon=True, 
-                        IconLabel=new_name, 
-                        Range=rng,
-                    )
-                    rng.InsertParagraphAfter()
-                    
-                except Exception as e:
-                    # Se falhar, tentamos o mais básico possível
-                    try:
-                        rng.InlineShapes.AddOLEObject(
-                            FileName=new_path,
-                            LinkToFile=False,
-                            DisplayAsIcon=True,
-                            Range=rng
-                        )
-                        rng.InsertParagraphAfter()
-                    except Exception as e_final:
-                        rng.InsertAfter(f"[ERRO CRÍTICO ao anexar {new_name}: {e_final}]")
-                        rng.InsertParagraphAfter()
-
-            default_dir = os.path.dirname(self.files_data[0]["path"])
-            save_filename = f"Processo_{ref}_{po}.docx"
-            save_path = os.path.join(default_dir, save_filename)
-
-            # Evitar sobrescrever .docx existente
-            if os.path.exists(save_path):
-                base, ext = os.path.splitext(save_filename)
-                counter = 1
-                while True:
-                    attempt = os.path.join(default_dir, f"{base}_{counter}{ext}")
-                    if not os.path.exists(attempt):
-                        save_path = attempt
-                        break
-                    counter += 1
-
-            doc.SaveAs(save_path)
-            doc.Close(False)
             word_app.Quit()
             
             # Limpa temporários
@@ -302,10 +332,14 @@ class DocFlowApp:
             except:
                 pass
 
-            messagebox.showinfo("Sucesso", f"Documento gerado em:\n{save_path}")
+            msg = "Arquivos gerados com sucesso:\n" + "\n".join(generated_files)
+            messagebox.showinfo("Sucesso", msg)
 
-            if messagebox.askyesno("Abrir", "Deseja abrir o arquivo agora?"):
-                os.startfile(save_path)
+            if messagebox.askyesno("Abrir", "Deseja abrir o local dos arquivos?"):
+                # Abre a pasta do primeiro arquivo gerado
+                if generated_files:
+                    folder = os.path.dirname(generated_files[0])
+                    os.startfile(folder)
 
         except Exception as e:
             messagebox.showerror("Erro", f"Erro crítico:\n{e}")
