@@ -4,6 +4,7 @@ import os
 import shutil
 import win32com.client as win32
 import tempfile
+import pythoncom 
 
 # Tentar importar tkinterdnd2 para habilitar Drag & Drop.
 try:
@@ -34,15 +35,15 @@ class DocFlowApp:
         input_frame = ttk.LabelFrame(root, text="Informações do Processo", padding=10)
         input_frame.pack(fill="x", padx=10, pady=5)
 
-        ttk.Label(input_frame, text="Num. da DI:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        ttk.Label(input_frame, text="Referência:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
         self.entry_ref = ttk.Entry(input_frame)
         self.entry_ref.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
 
-        ttk.Label(input_frame, text="Num. Fatura:").grid(row=0, column=2, padx=5, pady=5, sticky="e")
+        ttk.Label(input_frame, text="Número do PO:").grid(row=0, column=2, padx=5, pady=5, sticky="e")
         self.entry_po = ttk.Entry(input_frame)
         self.entry_po.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
 
-        ttk.Label(input_frame, text="Num. AWB:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        ttk.Label(input_frame, text="Ref. Cliente:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
         self.entry_cli = ttk.Entry(input_frame)
         self.entry_cli.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
 
@@ -126,7 +127,7 @@ class DocFlowApp:
             side="left", padx=5, fill="x", expand=True
         )
 
-        categories = ["DI", "CI", "Fatura", "Packing List", "HBL/AWB", "ICI", "DANFE", "Gare", "Comprovante Gare","GLME", "LI", "LPCO","Certificado de Análise"]
+        categories = ["Fatura", "Capa de Faturamento", "DI", "Outros"]
         combo = ttk.Combobox(row_frame, textvariable=cat_var, values=categories, state="readonly", width=22)
         combo.pack(side="left", padx=5)
 
@@ -189,101 +190,163 @@ class DocFlowApp:
             messagebox.showerror("Erro", "Adicione pelo menos um PDF.")
             return
 
+        # Configuração de Limite de Tamanho
+        MAX_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
+
+        # 1. Agrupamento em lotes (Batches) baseados no tamanho
+        batches = []
+        current_batch = []
+        current_batch_size = 0
+
+        for item in self.files_data:
+            file_path = os.path.abspath(item["path"])
+            try:
+                file_size = os.path.getsize(file_path)
+            except OSError:
+                file_size = 0
+            
+            # Se adicionar esse arquivo estoura 5MB E já temos arquivos no lote atual:
+            # Finaliza o lote atual e cria um novo.
+            # (Se o arquivo sozinho for > 5MB, ele entrará num lote novo sozinho ou passará o limite se for o primeiro, o que é esperado)
+            if (current_batch_size + file_size > MAX_SIZE_BYTES) and current_batch:
+                batches.append(current_batch)
+                current_batch = []
+                current_batch_size = 0
+            
+            current_batch.append(item)
+            current_batch_size += file_size
+
+        # Adiciona o último lote se sobrou algo
+        if current_batch:
+            batches.append(current_batch)
+
         try:
             self.btn_process.config(state="disabled", text="Processando...")
             self.root.update()
 
-            word_app = win32.Dispatch("Word.Application")
+            pythoncom.CoInitialize()
+
+            # Tenta conectar ao Word
+            try:
+                word_app = win32.Dispatch("Word.Application")
+            except:
+                word_app = win32.dynamic.Dispatch("Word.Application")
+                
             word_app.Visible = False
-            doc = word_app.Documents.Add()
 
-            # Cabeçalho
-            rng = doc.Content
-            rng.InsertAfter(f"Referência: {ref}\n")
-            rng.InsertAfter(f"PO: {po}\n")
-            rng.InsertAfter(f"Cliente: {cli}\n\n")
-
-            # Tempdir para cópias
+            # Prepara diretório temporário
             temp_dir = tempfile.mkdtemp(prefix="docflow_pdf_")
-
+            
             safe = lambda s: "".join(
                 c if c.isalnum() or c in ("-", "_") else "_" for c in str(s)
             )
+            
+            generated_files = []
 
-            for item in self.files_data:
-                original_pdf = os.path.abspath(item["path"])
-                category = item["category_var"].get()
+            # 2. Processa cada lote (batch) como um Documento separado
+            for i, batch in enumerate(batches):
+                doc = word_app.Documents.Add()
+                
+                # Cabeçalho
+                rng = doc.Content
+                rng.InsertAfter(f"Referência: {ref}\n")
+                rng.InsertAfter(f"PO: {po}\n")
+                rng.InsertAfter(f"Cliente: {cli}\n\n")
 
-                category_clean = safe(category).strip("_")
+                # Processa arquivos deste lote
+                for item in batch:
+                    original_pdf = os.path.abspath(item["path"])
+                    category = item["category_var"].get()
 
-                # cria nome sem duplicar _pdf ou .pdf
-                new_name = f"{category_clean}_{ref}_{cli}_{po}"
-                new_name = new_name.replace("_pdf", "")
-                new_name = new_name.replace(".pdf", "")
-                new_name += ".pdf"
+                    category_clean = safe(category).strip("_")
 
-                new_path = os.path.join(temp_dir, new_name)
+                    # Cria nome para anexo
+                    new_name = f"{category_clean}_{ref}_{cli}_{po}"
+                    new_name = new_name.replace("_pdf", "").replace(".pdf", "")
+                    new_name += ".pdf"
 
-                # Evita sobrescrever
-                if os.path.exists(new_path):
-                    base, ext = os.path.splitext(new_name)
+                    new_path = os.path.join(temp_dir, new_name)
+
+                    # Evita duplicidade no temp
+                    if os.path.exists(new_path):
+                        base, ext = os.path.splitext(new_name)
+                        counter = 1
+                        while True:
+                            attempt = os.path.join(temp_dir, f"{base}_{counter}{ext}")
+                            if not os.path.exists(attempt):
+                                new_path = attempt
+                                break
+                            counter += 1
+
+                    try:
+                        shutil.copy2(original_pdf, new_path)
+                    except:
+                        new_path = original_pdf
+
+                    rng = doc.Content
+                    rng.Collapse(0)
+
+                    try:
+                        # Tenta anexar usando a lógica AcroExch primeiro
+                        obj = rng.InlineShapes.AddOLEObject(
+                            ClassType="AcroExch.Document",
+                            FileName=new_path,
+                            LinkToFile=False,
+                            Range=rng,
+                        )
+                        rng.InsertParagraphAfter()
+                    except Exception as e:
+                        # Se falhar (ex: sem Adobe), apenas insere mensagem de erro no doc
+                        # ou tenta fallback genérico se desejado.
+                        rng.InsertAfter(f"[ERRO ao anexar {new_name}: {e}]")
+                        rng.InsertParagraphAfter()
+
+                # Salvar o documento do lote atual
+                default_dir = os.path.dirname(self.files_data[0]["path"])
+                
+                # Define nome do arquivo: Se tiver mais de 1 lote, adiciona _ParteX
+                suffix = f"_Parte{i+1}" if len(batches) > 1 else ""
+                save_filename = f"Processo_{ref}_{po}{suffix}.docx"
+                save_path = os.path.join(default_dir, save_filename)
+
+                # Evitar sobrescrever
+                if os.path.exists(save_path):
+                    base, ext = os.path.splitext(save_filename)
                     counter = 1
                     while True:
-                        attempt = os.path.join(temp_dir, f"{base}_{counter}{ext}")
+                        attempt = os.path.join(default_dir, f"{base}_{counter}{ext}")
                         if not os.path.exists(attempt):
-                            new_path = attempt
+                            save_path = attempt
                             break
                         counter += 1
 
-                try:
-                    shutil.copy2(original_pdf, new_path)
-                except:
-                    new_path = original_pdf
+                doc.SaveAs(save_path)
+                doc.Close(False)
+                generated_files.append(save_path)
 
-                rng = doc.Content
-                rng.Collapse(0)
-
-                try:
-                    obj = rng.InlineShapes.AddOLEObject(
-                        ClassType="AcroExch.Document",
-                        FileName=new_path,
-                        LinkToFile=False,
-                        Range=rng,
-                    )
-
-                    rng.InsertParagraphAfter()
-                    
-
-                except Exception as e:
-                    rng.InsertAfter(f"[ERRO ao anexar {new_path}: {e}]")
-                    rng.InsertParagraphAfter()
-
-            default_dir = os.path.dirname(self.files_data[0]["path"])
-            save_filename = f"Processo_{ref}_{po}.docx"
-            save_path = os.path.join(default_dir, save_filename)
-
-            # Evitar sobrescrever .docx existente
-            if os.path.exists(save_path):
-                base, ext = os.path.splitext(save_filename)
-                counter = 1
-                while True:
-                    attempt = os.path.join(default_dir, f"{base}_{counter}{ext}")
-                    if not os.path.exists(attempt):
-                        save_path = attempt
-                        break
-                    counter += 1
-
-            doc.SaveAs(save_path)
-            doc.Close(False)
             word_app.Quit()
+            
+            # Limpa temporários
+            try:
+                shutil.rmtree(temp_dir)
+            except:
+                pass
 
-            messagebox.showinfo("Sucesso", f"Documento gerado em:\n{save_path}")
+            msg = "Arquivos gerados com sucesso:\n" + "\n".join(generated_files)
+            messagebox.showinfo("Sucesso", msg)
 
-            if messagebox.askyesno("Abrir", "Deseja abrir o arquivo agora?"):
-                os.startfile(save_path)
+            if messagebox.askyesno("Abrir", "Deseja abrir o local dos arquivos?"):
+                # Abre a pasta do primeiro arquivo gerado
+                if generated_files:
+                    folder = os.path.dirname(generated_files[0])
+                    os.startfile(folder)
 
         except Exception as e:
             messagebox.showerror("Erro", f"Erro crítico:\n{e}")
+            try:
+                if 'doc' in locals() and doc: doc.Close(False)
+                if 'word_app' in locals() and word_app: word_app.Quit()
+            except: pass
 
         finally:
             self.btn_process.config(state="normal", text="Gerar Documento Word")
