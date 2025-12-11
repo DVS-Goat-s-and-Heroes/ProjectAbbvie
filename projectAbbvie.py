@@ -35,15 +35,15 @@ class DocFlowApp:
         input_frame = ttk.LabelFrame(root, text="Informações do Processo", padding=10)
         input_frame.pack(fill="x", padx=10, pady=5)
 
-        ttk.Label(input_frame, text="Referência:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        ttk.Label(input_frame, text="Num. da DI:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
         self.entry_ref = ttk.Entry(input_frame)
         self.entry_ref.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
 
-        ttk.Label(input_frame, text="Número do PO:").grid(row=0, column=2, padx=5, pady=5, sticky="e")
+        ttk.Label(input_frame, text="Num. Fatura:").grid(row=0, column=2, padx=5, pady=5, sticky="e")
         self.entry_po = ttk.Entry(input_frame)
         self.entry_po.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
 
-        ttk.Label(input_frame, text="Ref. Cliente:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        ttk.Label(input_frame, text="Num. AWB:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
         self.entry_cli = ttk.Entry(input_frame)
         self.entry_cli.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
 
@@ -127,7 +127,7 @@ class DocFlowApp:
             side="left", padx=5, fill="x", expand=True
         )
 
-        categories = ["Fatura", "Capa de Faturamento", "DI", "Outros"]
+        categories = ["DI", "CI", "Fatura", "Packing List", "HBL/AWB", "ICI", "DANFE", "GARE", "Comprovante Gare", "GLME", "ND","NF", "Tela debitos", "Marinha", "LI", "LI Deferida", "LPCO", "Certificado de Analise", "Demonstrativo"]
         combo = ttk.Combobox(row_frame, textvariable=cat_var, values=categories, state="readonly", width=22)
         combo.pack(side="left", padx=5)
 
@@ -249,9 +249,9 @@ class DocFlowApp:
                 
                 # Cabeçalho
                 rng = doc.Content
-                rng.InsertAfter(f"Referência: {ref}\n")
-                rng.InsertAfter(f"PO: {po}\n")
-                rng.InsertAfter(f"Cliente: {cli}\n\n")
+                rng.InsertAfter(f"DI: {ref}\n")
+                rng.InsertAfter(f"Fatura: {po}\n")
+                rng.InsertAfter(f"AWB: {cli}\n\n")
 
                 # Processa arquivos deste lote
                 for item in batch:
