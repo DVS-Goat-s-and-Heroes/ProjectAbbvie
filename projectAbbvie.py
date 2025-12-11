@@ -19,7 +19,7 @@ except Exception:
 class DocFlowApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("DocFlow Pro - Desktop")
+        self.root.title("DSV Flow Pro - Desktop")
         self.root.geometry("820x600")
 
         # Variáveis de armazenamento
@@ -35,15 +35,15 @@ class DocFlowApp:
         input_frame = ttk.LabelFrame(root, text="Informações do Processo", padding=10)
         input_frame.pack(fill="x", padx=10, pady=5)
 
-        ttk.Label(input_frame, text="Referência:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        ttk.Label(input_frame, text="Num. da DI:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
         self.entry_ref = ttk.Entry(input_frame)
         self.entry_ref.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
 
-        ttk.Label(input_frame, text="Número do PO:").grid(row=0, column=2, padx=5, pady=5, sticky="e")
+        ttk.Label(input_frame, text="Num. Fatura:").grid(row=0, column=2, padx=5, pady=5, sticky="e")
         self.entry_po = ttk.Entry(input_frame)
         self.entry_po.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
 
-        ttk.Label(input_frame, text="Ref. Cliente:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        ttk.Label(input_frame, text="Num. AWB:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
         self.entry_cli = ttk.Entry(input_frame)
         self.entry_cli.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
 
@@ -127,7 +127,7 @@ class DocFlowApp:
             side="left", padx=5, fill="x", expand=True
         )
 
-        categories = ["Fatura", "Capa de Faturamento", "DI", "Outros"]
+        categories = ["DI", "CI", "Fatura", "Packing List", "HBL/AWB", "ICI", "DANFE", "GARE", "Comprovante Gare", "GLME", "ND","NF", "Tela debitos", "Marinha", "LI", "LI Deferida", "LPCO", "Certificado de Analise", "Demonstrativo"]
         combo = ttk.Combobox(row_frame, textvariable=cat_var, values=categories, state="readonly", width=22)
         combo.pack(side="left", padx=5)
 
@@ -183,21 +183,21 @@ class DocFlowApp:
         cli = self.entry_cli.get().strip()
 
         if not all([ref, po, cli]):
-            messagebox.showerror("Erro", "Preencha Referência, PO e Cliente.")
+            messagebox.showerror("Erro", "Preencha DI, Fatura e AWB.")
             return
 
         if not self.files_data:
             messagebox.showerror("Erro", "Adicione pelo menos um PDF.")
             return
 
-        # Configuração de Limite de Tamanho
+        # --- LÓGICA DE LIMITE DE 5MB ---
         MAX_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
 
-        # 1. Agrupamento em lotes (Batches) baseados no tamanho
         batches = []
         current_batch = []
         current_batch_size = 0
 
+        # Agrupa arquivos em lotes
         for item in self.files_data:
             file_path = os.path.abspath(item["path"])
             try:
@@ -205,9 +205,7 @@ class DocFlowApp:
             except OSError:
                 file_size = 0
             
-            # Se adicionar esse arquivo estoura 5MB E já temos arquivos no lote atual:
-            # Finaliza o lote atual e cria um novo.
-            # (Se o arquivo sozinho for > 5MB, ele entrará num lote novo sozinho ou passará o limite se for o primeiro, o que é esperado)
+            # Se adicionar este arquivo excede 5MB E já temos arquivos no lote atual
             if (current_batch_size + file_size > MAX_SIZE_BYTES) and current_batch:
                 batches.append(current_batch)
                 current_batch = []
@@ -216,7 +214,7 @@ class DocFlowApp:
             current_batch.append(item)
             current_batch_size += file_size
 
-        # Adiciona o último lote se sobrou algo
+        # Adiciona o último lote
         if current_batch:
             batches.append(current_batch)
 
@@ -226,7 +224,7 @@ class DocFlowApp:
 
             pythoncom.CoInitialize()
 
-            # Tenta conectar ao Word
+            # Tenta conectar ao Word (Dynamic Dispatch é mais seguro para OLE)
             try:
                 word_app = win32.Dispatch("Word.Application")
             except:
@@ -234,7 +232,7 @@ class DocFlowApp:
                 
             word_app.Visible = False
 
-            # Prepara diretório temporário
+            # Diretório temporário
             temp_dir = tempfile.mkdtemp(prefix="docflow_pdf_")
             
             safe = lambda s: "".join(
@@ -243,25 +241,24 @@ class DocFlowApp:
             
             generated_files = []
 
-            # 2. Processa cada lote (batch) como um Documento separado
+            # Loop para gerar um documento por lote
             for i, batch in enumerate(batches):
                 doc = word_app.Documents.Add()
                 
                 # Cabeçalho
                 rng = doc.Content
-                rng.InsertAfter(f"Referência: {ref}\n")
-                rng.InsertAfter(f"PO: {po}\n")
-                rng.InsertAfter(f"Cliente: {cli}\n\n")
+                rng.InsertAfter(f"DI: {ref}\n")
+                rng.InsertAfter(f"Fatura: {po}\n")
+                rng.InsertAfter(f"AWB: {cli}\n\n")
 
-                # Processa arquivos deste lote
                 for item in batch:
                     original_pdf = os.path.abspath(item["path"])
                     category = item["category_var"].get()
 
                     category_clean = safe(category).strip("_")
 
-                    # Cria nome para anexo
-                    new_name = f"{category_clean}_{ref}_{cli}_{po}"
+                    # Cria nome do arquivo
+                    new_name = f"{category_clean}_{ref}_{po}_{cli}"
                     new_name = new_name.replace("_pdf", "").replace(".pdf", "")
                     new_name += ".pdf"
 
@@ -287,29 +284,33 @@ class DocFlowApp:
                     rng.Collapse(0)
 
                     try:
-                        # Tenta anexar usando a lógica AcroExch primeiro
+                        # --- SOLUÇÃO DO PREVIEW ---
+                        # Usamos DisplayAsIcon=True para forçar o modo ícone.
+                        # Usamos IconLabel para garantir o nome embaixo.
+                        # Removemos ClassType="AcroExch..." para que ele use o ícone padrão do sistema
+                        # (evita ícone branco se não tiver Adobe, e evita preview se tiver Adobe Pro).
+                        
                         obj = rng.InlineShapes.AddOLEObject(
-                            ClassType="AcroExch.Document",
                             FileName=new_path,
                             LinkToFile=False,
+                            DisplayAsIcon=True,  # ISSO IMPEDE O PREVIEW
+                            IconLabel=new_name,  # ISSO GARANTE O NOME
                             Range=rng,
                         )
                         rng.InsertParagraphAfter()
                     except Exception as e:
-                        # Se falhar (ex: sem Adobe), apenas insere mensagem de erro no doc
-                        # ou tenta fallback genérico se desejado.
                         rng.InsertAfter(f"[ERRO ao anexar {new_name}: {e}]")
                         rng.InsertParagraphAfter()
 
-                # Salvar o documento do lote atual
+                # Salvar o documento
                 default_dir = os.path.dirname(self.files_data[0]["path"])
                 
-                # Define nome do arquivo: Se tiver mais de 1 lote, adiciona _ParteX
+                # Sufixo se houver múltiplos arquivos
                 suffix = f"_Parte{i+1}" if len(batches) > 1 else ""
                 save_filename = f"Processo_{ref}_{po}{suffix}.docx"
                 save_path = os.path.join(default_dir, save_filename)
 
-                # Evitar sobrescrever
+                # Evita sobrescrever
                 if os.path.exists(save_path):
                     base, ext = os.path.splitext(save_filename)
                     counter = 1
@@ -336,7 +337,6 @@ class DocFlowApp:
             messagebox.showinfo("Sucesso", msg)
 
             if messagebox.askyesno("Abrir", "Deseja abrir o local dos arquivos?"):
-                # Abre a pasta do primeiro arquivo gerado
                 if generated_files:
                     folder = os.path.dirname(generated_files[0])
                     os.startfile(folder)
