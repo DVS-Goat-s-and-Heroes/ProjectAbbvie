@@ -4,7 +4,8 @@ import os
 import shutil
 import win32com.client as win32
 import tempfile
-import pythoncom 
+import pythoncom
+import win32api # Necessário para encontrar o ícone correto sem travar
 
 # Tentar importar tkinterdnd2 para habilitar Drag & Drop.
 try:
@@ -174,6 +175,21 @@ class DocFlowApp:
                     self._add_file_programmatically(clean)
 
     # ======================================================================
+    # Helper: Obter ícone sem travar
+    # ======================================================================
+    def get_icon_path(self, file_path):
+        """Descobre o executável padrão para PDFs para usar seu ícone"""
+        try:
+            # Retorna (código, caminho_do_executável)
+            _, exe_path = win32api.FindExecutable(file_path)
+            if exe_path and os.path.exists(exe_path):
+                return exe_path
+        except:
+            pass
+        # Fallback seguro: Ícone genérico do Windows (shell32)
+        return r"C:\Windows\System32\shell32.dll"
+
+    # ======================================================================
     # Geração do Word
     # ======================================================================
 
@@ -252,6 +268,9 @@ class DocFlowApp:
                 rng.InsertAfter(f"AWB: {cli}\n\n")
 
                 for item in batch:
+                    # Atualiza a interface para não parecer travado
+                    self.root.update()
+                    
                     original_pdf = os.path.abspath(item["path"])
                     category = item["category_var"].get()
 
@@ -284,23 +303,37 @@ class DocFlowApp:
                     rng.Collapse(0)
 
                     try:
-                        # --- SOLUÇÃO DO PREVIEW ---
-                        # Usamos DisplayAsIcon=True para forçar o modo ícone.
-                        # Usamos IconLabel para garantir o nome embaixo.
-                        # Removemos ClassType="AcroExch..." para que ele use o ícone padrão do sistema
-                        # (evita ícone branco se não tiver Adobe, e evita preview se tiver Adobe Pro).
+                        # --- SOLUÇÃO ANTI-TRAVAMENTO ---
+                        # Descobre qual o programa padrão de PDF (Ex: Adobe, Edge, Foxit)
+                        icon_source = self.get_icon_path(new_path)
                         
+                        # Anexa especificando o ícone explicitamente.
+                        # Isso impede o Word de tentar gerar preview ou travar procurando.
                         obj = rng.InlineShapes.AddOLEObject(
                             FileName=new_path,
                             LinkToFile=False,
-                            DisplayAsIcon=True,  # ISSO IMPEDE O PREVIEW
-                            IconLabel=new_name,  # ISSO GARANTE O NOME
+                            DisplayAsIcon=True,  # Força ícone
+                            IconFileName=icon_source, # Usa o ícone do programa padrão
+                            IconIndex=0,         # Primeiro ícone do arquivo
+                            IconLabel=new_name,  # Garante o nome
                             Range=rng,
                         )
                         rng.InsertParagraphAfter()
                     except Exception as e:
-                        rng.InsertAfter(f"[ERRO ao anexar {new_name}: {e}]")
-                        rng.InsertParagraphAfter()
+                        # Fallback seguro se falhar o método acima
+                        try:
+                            rng.InsertAfter(f"Anexo: ")
+                            rng.Collapse(0)
+                            rng.InlineShapes.AddOLEObject(
+                                FileName=new_path,
+                                LinkToFile=False,
+                                DisplayAsIcon=True,
+                                Range=rng
+                            )
+                            rng.InsertParagraphAfter()
+                        except:
+                            rng.InsertAfter(f"[ERRO ao anexar {new_name}]")
+                            rng.InsertParagraphAfter()
 
                 # Salvar o documento
                 default_dir = os.path.dirname(self.files_data[0]["path"])
