@@ -19,7 +19,7 @@ except Exception:
 class DocFlowApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("DocFlow Pro - Desktop")
+        self.root.title("DSV Flow Pro - Desktop")
         self.root.geometry("820x600")
 
         # Variáveis de armazenamento
